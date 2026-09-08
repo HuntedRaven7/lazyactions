@@ -566,7 +566,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.prPage = 0
 			m.prOffset = 0
 			if m.prScope == "global" {
-				return m, fetchGlobalPRs("")
+				query := ""
+				if m.myPRsOnly {
+					query = "author:@me"
+				}
+				return m, fetchGlobalPRs(query)
 			} else if m.myPRsOnly {
 				return m, fetchMyPRs(m.currentRepo.NameWithOwner)
 			}
@@ -583,7 +587,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.prPage = 0
 			m.prOffset = 0
 			if m.prScope == "global" {
-				return m, fetchGlobalPRs("")
+				query := ""
+				if m.myPRsOnly {
+					query = "author:@me"
+				}
+				return m, fetchGlobalPRs(query)
 			} else if m.myPRsOnly {
 				return m, fetchMyPRs(m.currentRepo.NameWithOwner)
 			}
@@ -596,7 +604,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.prPage = 0
 			m.prOffset = 0
 			if m.prScope == "global" {
-				return m, fetchGlobalPRs("")
+				query := ""
+				if m.myPRsOnly {
+					query = "author:@me"
+				}
+				return m, fetchGlobalPRs(query)
 			} else if m.myPRsOnly {
 				return m, fetchMyPRs(m.currentRepo.NameWithOwner)
 			}
