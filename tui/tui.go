@@ -251,6 +251,19 @@ func fetchGlobalPRs(query string) tea.Cmd {
 	}
 }
 
+func fetchMyGlobalPRs() tea.Cmd {
+	return func() tea.Msg {
+		prs, err := gh.SearchMyPRs(100)
+		if err != nil {
+			return errMsg{err}
+		}
+		sort.Slice(prs, func(i, j int) bool {
+			return prs[i].Number > prs[j].Number
+		})
+		return prsMsg(prs)
+	}
+}
+
 func fetchPRsImpl(repo string, myPRsOnly bool, global bool) tea.Msg {
 	var prs []gh.PR
 	var err error
@@ -565,12 +578,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.prPage = 0
 			m.prOffset = 0
-			if m.prScope == "global" {
-				query := ""
-				if m.myPRsOnly {
-					query = "author:@me"
-				}
-				return m, fetchGlobalPRs(query)
+			if m.prScope == "global" && m.myPRsOnly {
+				return m, fetchMyGlobalPRs()
+			} else if m.prScope == "global" {
+				return m, fetchGlobalPRs("")
 			} else if m.myPRsOnly {
 				return m, fetchMyPRs(m.currentRepo.NameWithOwner)
 			}
@@ -586,12 +597,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedPR = 0
 			m.prPage = 0
 			m.prOffset = 0
-			if m.prScope == "global" {
-				query := ""
-				if m.myPRsOnly {
-					query = "author:@me"
-				}
-				return m, fetchGlobalPRs(query)
+			if m.prScope == "global" && m.myPRsOnly {
+				return m, fetchMyGlobalPRs()
+			} else if m.prScope == "global" {
+				return m, fetchGlobalPRs("")
 			} else if m.myPRsOnly {
 				return m, fetchMyPRs(m.currentRepo.NameWithOwner)
 			}
@@ -603,12 +612,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedPR = 0
 			m.prPage = 0
 			m.prOffset = 0
-			if m.prScope == "global" {
-				query := ""
-				if m.myPRsOnly {
-					query = "author:@me"
-				}
-				return m, fetchGlobalPRs(query)
+			if m.prScope == "global" && m.myPRsOnly {
+				return m, fetchMyGlobalPRs()
+			} else if m.prScope == "global" {
+				return m, fetchGlobalPRs("")
 			} else if m.myPRsOnly {
 				return m, fetchMyPRs(m.currentRepo.NameWithOwner)
 			}

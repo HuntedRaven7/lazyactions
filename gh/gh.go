@@ -271,6 +271,31 @@ func SearchPRs(query string, limit int) ([]PR, error) {
 	return prs, nil
 }
 
+func SearchMyPRs(limit int) ([]PR, error) {
+	user, err := GetCurrentUser()
+	if err != nil {
+		return nil, err
+	}
+	searchQuery := fmt.Sprintf("author:%s in:all", user)
+	out, err := runGh("", "search", "prs", searchQuery, "--json", "number,title,state,isDraft,author,repository,createdAt,updatedAt,url", "--limit", fmt.Sprintf("%d", limit))
+	if err != nil {
+		return nil, err
+	}
+	var prs []PR
+	if err := json.Unmarshal([]byte(out), &prs); err != nil {
+		return nil, fmt.Errorf("parsing my pr search: %w", err)
+	}
+	return prs, nil
+}
+
+func GetCurrentUser() (string, error) {
+	out, err := runGh("", "api", "user", "-q", ".login")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 func GetPRChecks(repo string, prNumber int) ([]Check, error) {
 	out, err := runGh(repo, "pr", "checks", fmt.Sprintf("%d", prNumber), "--json", "name,state,bucket,link,event,workflow,startedAt,completedAt,description")
 	if err != nil {
