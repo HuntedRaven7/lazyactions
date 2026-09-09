@@ -33,7 +33,8 @@ go install .
 | `q` / `Ctrl+C` | Quit |
 | `r` | Refresh run list |
 | `o` | Open repository selector |
-| `p` | Open pull request dashboard |
+| `p` | Open pull request dashboard (current repo) |
+| `P` (shift+p) | Open your PRs across all repos |
 | `Tab` | Switch focus between runs list and jobs panel |
 
 ### Runs panel
@@ -85,6 +86,13 @@ go install .
 | `g` | Top of list |
 | `G` | Bottom of list |
 | `b` / `Enter` | Open selected PR in browser |
+| `d` | View PR detail (body, comments, reviews) |
+| `D` | View PR diff |
+| `c` | Checkout selected PR |
+| `C` (shift+c) | Close selected PR |
+| `M` (shift+m) | Merge selected PR |
+| `a` | Approve selected PR |
+| `A` (shift+a) | Mark selected PR as ready |
 | `r` | Refresh PR list |
 | `m` | Toggle showing only your PRs |
 | `s` | Toggle between repo-specific and GitHub-wide PR search |
@@ -100,5 +108,8 @@ go install .
 - View open PRs and their action check statuses
 - Filter PR list to show only your PRs
 - Search PRs GitHub-wide or within a specific repo
+- View rich PR details including body, comments, and reviews
+- View PR code diffs in-terminal
 - Open runs and PRs directly in your browser
+- Checkout, close, merge, approve, and mark PRs ready from the TUI
 - Color-coded status indicators (success / failure / running / queued)

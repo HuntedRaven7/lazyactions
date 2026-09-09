@@ -206,6 +206,37 @@ type PR struct {
 	UpdatedAt     time.Time    `json:"updatedAt"`
 }
 
+type Label struct {
+	Name string `json:"name"`
+}
+
+type Assignee struct {
+	Login string `json:"login"`
+}
+
+type Comment struct {
+	Author     struct{ Login string `json:"login"` } `json:"author"`
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type Review struct {
+	Author     struct{ Login string `json:"login"` } `json:"author"`
+	State      string    `json:"state"`
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type PRDetail struct {
+	PR
+	Body      string     `json:"body"`
+	Labels    []Label    `json:"labels"`
+	Assignees []Assignee `json:"assignees"`
+	Comments  []Comment  `json:"comments"`
+	Reviews   []Review   `json:"reviews"`
+	Commits   int        `json:"commits"`
+}
+
 type Check struct {
 	Name        string    `json:"name"`
 	State       string    `json:"state"`
@@ -219,7 +250,7 @@ type Check struct {
 }
 
 func GetPRs(repo string, limit int) ([]PR, error) {
-	out, err := runGh(repo, "pr", "list", "--json", "number,title,state,headRefName,baseRefName,url,mergeable,reviewDecision,isDraft,author,createdAt,updatedAt", "--limit", fmt.Sprintf("%d", limit))
+	out, err := runGh(repo, "pr", "list", "--state", "all", "--json", "number,title,state,headRefName,baseRefName,url,mergeable,reviewDecision,isDraft,author,createdAt,updatedAt", "--limit", fmt.Sprintf("%d", limit))
 	if err != nil {
 		return nil, err
 	}
@@ -231,35 +262,23 @@ func GetPRs(repo string, limit int) ([]PR, error) {
 }
 
 func GetMyPRs(repo string, limit int) ([]PR, error) {
-	prs, err := GetPRs(repo, limit)
+	user, err := GetCurrentUser()
 	if err != nil {
 		return nil, err
 	}
-
-	user, err := getCurrentUser()
+	out, err := runGh(repo, "pr", "list", "--state", "all", "--author", user, "--json", "number,title,state,headRefName,baseRefName,url,mergeable,reviewDecision,isDraft,author,createdAt,updatedAt", "--limit", fmt.Sprintf("%d", limit))
 	if err != nil {
 		return nil, err
 	}
-
-	var myPRs []PR
-	for _, pr := range prs {
-		if pr.Author.Login == user {
-			myPRs = append(myPRs, pr)
-		}
+	var prs []PR
+	if err := json.Unmarshal([]byte(out), &prs); err != nil {
+		return nil, fmt.Errorf("parsing my pr list: %w", err)
 	}
-	return myPRs, nil
-}
-
-func getCurrentUser() (string, error) {
-	out, err := runGh("", "api", "user", "-q", ".login")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out), nil
+	return prs, nil
 }
 
 func SearchPRs(query string, limit int) ([]PR, error) {
-	searchQuery := fmt.Sprintf("%s in:all", query)
+	searchQuery := fmt.Sprintf("is:pr archived:false %s in:all sort:updated", query)
 	out, err := runGh("", "search", "prs", searchQuery, "--json", "number,title,state,isDraft,author,repository,createdAt,updatedAt,url", "--limit", fmt.Sprintf("%d", limit))
 	if err != nil {
 		return nil, err
@@ -272,11 +291,7 @@ func SearchPRs(query string, limit int) ([]PR, error) {
 }
 
 func SearchMyPRs(limit int) ([]PR, error) {
-	user, err := GetCurrentUser()
-	if err != nil {
-		return nil, err
-	}
-	searchQuery := fmt.Sprintf("author:%s in:all", user)
+	searchQuery := "is:pr archived:false author:@me in:all sort:updated"
 	out, err := runGh("", "search", "prs", searchQuery, "--json", "number,title,state,isDraft,author,repository,createdAt,updatedAt,url", "--limit", fmt.Sprintf("%d", limit))
 	if err != nil {
 		return nil, err
@@ -323,4 +338,50 @@ func BrowsePR(repo string, prNumber int) error {
 		return fmt.Errorf("empty pr url")
 	}
 	return OpenBrowser(payload.URL)
+}
+
+func GetPRDetail(repo string, prNumber int) (PRDetail, error) {
+	out, err := runGh(repo, "pr", "view", fmt.Sprintf("%d", prNumber), "--json", "number,title,state,isDraft,headRefName,baseRefName,url,mergeable,reviewDecision,author,createdAt,updatedAt,body,labels,assignees,comments,reviews,commits")
+	if err != nil {
+		return PRDetail{}, err
+	}
+	var detail PRDetail
+	if err := json.Unmarshal([]byte(out), &detail); err != nil {
+		return PRDetail{}, fmt.Errorf("parsing pr detail: %w", err)
+	}
+	return detail, nil
+}
+
+func GetPRDiff(repo string, prNumber int) (string, error) {
+	return runGh(repo, "pr", "diff", fmt.Sprintf("%d", prNumber))
+}
+
+func CheckoutPR(repo string, prNumber int) error {
+	_, err := runGh(repo, "pr", "checkout", fmt.Sprintf("%d", prNumber))
+	return err
+}
+
+func ClosePR(repo string, prNumber int) error {
+	_, err := runGh(repo, "pr", "close", fmt.Sprintf("%d", prNumber))
+	return err
+}
+
+func MergePR(repo string, prNumber int) error {
+	_, err := runGh(repo, "pr", "merge", fmt.Sprintf("%d", prNumber))
+	return err
+}
+
+func CommentPR(repo string, prNumber int, body string) error {
+	_, err := runGh(repo, "pr", "comment", fmt.Sprintf("%d", prNumber), "--body", body)
+	return err
+}
+
+func ApprovePR(repo string, prNumber int) error {
+	_, err := runGh(repo, "pr", "review", fmt.Sprintf("%d", prNumber), "--approve")
+	return err
+}
+
+func ReadyPR(repo string, prNumber int) error {
+	_, err := runGh(repo, "pr", "ready", fmt.Sprintf("%d", prNumber))
+	return err
 }

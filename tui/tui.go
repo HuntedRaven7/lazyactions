@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/robin/lazyactions/backend"
 	"github.com/robin/lazyactions/gh"
 )
 
@@ -21,9 +22,23 @@ const (
 	viewLogs
 	viewRepo
 	viewPR
+	viewBackend
+	viewBackendSelect
+	viewNotifications
 )
 
 type model struct {
+	backend     backend.Backend
+	backendTab  string
+	backendTabs []string
+	resources   []backend.Resource
+	selectedIdx int
+	offset      int
+	filter      string
+	details     backend.Resource
+	backends    []backend.Backend
+	selectedBackend int
+	previousView viewType
 	runs        []gh.Run
 	detail      gh.RunDetail
 	logs        string
@@ -40,6 +55,10 @@ type model struct {
 	loading     bool
 	statusMsg   string
 	statusTimer int
+
+	notifications []notification
+	notification  *notification
+	notificationTimer int
 
 	repos        []gh.Repo
 	selectedRepo int
@@ -60,7 +79,27 @@ type model struct {
 	prScope    string
 	prPage     int
 	prPageSize int
+
+	prDetail      gh.PRDetail
+	prDiff        string
+	prDetailOffset int
+	prDiffOffset   int
+
+	helpVisible bool
 }
+
+type notification struct {
+	message string
+	level   string
+	time    time.Time
+}
+
+const (
+	notificationSuccess = "success"
+	notificationError   = "error"
+	notificationWarning = "warning"
+	notificationInfo    = "info"
+)
 
 type focusType int
 
@@ -150,10 +189,37 @@ func formatTime(t time.Time) string {
 }
 
 func New() model {
-	return model{focus: focusRuns}
+	m := model{}
+	m.backends = availableBackends()
+	m.view = viewBackendSelect
+	m.previousView = viewBackendSelect
+	return m
+}
+
+func NewWithBackend(b backend.Backend) model {
+	m := New()
+	if b != nil {
+		m.backend = b
+		m.backendTabs = b.Tabs()
+		if len(m.backendTabs) > 0 {
+			m.backendTab = m.backendTabs[0]
+		}
+		if b.Name() == "GitHub" {
+			m.view = viewMain
+		} else {
+			m.view = viewBackend
+		}
+	}
+	return m
 }
 
 func (m model) Init() tea.Cmd {
+	if m.view == viewBackendSelect {
+		return nil
+	}
+	if m.backend != nil {
+		return m.fetchBackendResources()
+	}
 	return fetchCurrentRepo
 }
 
@@ -212,6 +278,103 @@ func rerunRunForRepo(repo, runID string) tea.Cmd {
 			return errMsg{err}
 		}
 		return statusMsg("Run rerun triggered")
+	}
+}
+
+func availableBackends() []backend.Backend {
+	return []backend.Backend{
+		backend.NewGitHub(""),
+		backend.NewDocker("docker"),
+		backend.NewDocker("podman"),
+		backend.NewKubernetes(""),
+		backend.NewHermes("", ""),
+		backend.NewSSH("localhost", "root", 22),
+	}
+}
+
+func (m model) switchBackend(b backend.Backend) (tea.Model, tea.Cmd) {
+	m.previousView = m.view
+	m.backend = b
+	m.backendTabs = b.Tabs()
+	if len(m.backendTabs) > 0 {
+		m.backendTab = m.backendTabs[0]
+	}
+	m.resources = nil
+	m.selectedIdx = 0
+	m.offset = 0
+	m.filter = ""
+	m.details = backend.Resource{}
+	if b.Name() == "GitHub" {
+		m.view = viewMain
+		return m, fetchCurrentRepo
+	}
+	m.view = viewBackend
+	return m, m.fetchBackendResources()
+}
+
+func (m model) fetchBackendResources() tea.Cmd {
+	return func() tea.Msg {
+		if m.backend == nil || m.backendTab == "" {
+			return errMsg{fmt.Errorf("no backend configured")}
+		}
+		resources, err := m.backend.Fetch(m.backendTab, m.filter)
+		if err != nil {
+			return errMsg{err}
+		}
+		return backendResourcesMsg(resources)
+	}
+}
+
+func (m model) fetchBackendDetails() tea.Cmd {
+	return func() tea.Msg {
+		if m.backend == nil || m.backendTab == "" || len(m.resources) == 0 {
+			return errMsg{fmt.Errorf("no resource selected")}
+		}
+		res := m.resources[m.selectedIdx]
+		details, err := m.backend.Inspect(m.backendTab, res.ID)
+		if err != nil {
+			return errMsg{err}
+		}
+		return backendDetailsMsg(details)
+	}
+}
+
+func (m model) runBackendAction(action string) tea.Cmd {
+	return func() tea.Msg {
+		if m.backend == nil || m.backendTab == "" || len(m.resources) == 0 {
+			return errMsg{fmt.Errorf("no resource selected")}
+		}
+		res := m.resources[m.selectedIdx]
+		out, err := m.backend.RunAction(m.backendTab, res.ID, action, nil)
+		if err != nil {
+			return errMsg{err}
+		}
+		return statusMsg(fmt.Sprintf("Action %s completed: %s", action, out))
+	}
+}
+
+func (m model) runBackendActionForSelected(action string) tea.Cmd {
+	if len(m.resources) == 0 || m.selectedIdx >= len(m.resources) {
+		return nil
+	}
+	res := m.resources[m.selectedIdx]
+	return func() tea.Msg {
+		out, err := m.backend.RunAction(m.backendTab, res.ID, action, nil)
+		if err != nil {
+			return errMsg{err}
+		}
+		return statusMsg(fmt.Sprintf("Action %s completed: %s", action, out))
+	}
+}
+
+func (m model) addNotification(message, level string) tea.Cmd {
+	n := notification{
+		message: message,
+		level:   level,
+		time:    time.Now(),
+	}
+	return func() tea.Msg {
+		return notificationMsg{notification: n}
 	}
 }
 
@@ -328,12 +491,23 @@ func watchTick() tea.Cmd {
 	})
 }
 
+func notificationTick() tea.Cmd {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+		return notificationTickMsg{}
+	})
+}
+
+type notificationTickMsg struct{}
+
 type currentRepoMsg gh.Repo
 type runsMsg []gh.Run
 type detailMsg gh.RunDetail
 type logsMsg string
 type errMsg struct{ err error }
 type statusMsg string
+type notificationMsg struct {
+		notification notification
+	}
 type reposMsg []gh.Repo
 type watchStartMsg struct {
 	cmd    *exec.Cmd
@@ -345,6 +519,8 @@ type watchMsg struct {
 }
 type prsMsg []gh.PR
 type checksMsg []gh.Check
+type backendResourcesMsg []backend.Resource
+type backendDetailsMsg backend.Resource
 
 func reverseSlice[T any](s []T) {
 	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
@@ -390,6 +566,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = string(msg)
 		m.statusTimer = 60
 		return m, nil
+	case notificationMsg:
+		m.notification = &msg.notification
+		m.notificationTimer = 180
+		m.notifications = append(m.notifications, msg.notification)
+		return m, notificationTick()
 	case reposMsg:
 		m.repos = msg
 		reverseSlice(m.repos)
@@ -428,6 +609,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			return m, watchTick()
 		}
+	case notificationTickMsg:
+		if m.notificationTimer > 0 {
+			m.notificationTimer--
+		}
+		if m.notificationTimer <= 0 {
+			m.notification = nil
+		}
+		return m, nil
 	case prsMsg:
 		m.prs = msg
 		reverseSlice(m.prs)
@@ -442,8 +631,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case checksMsg:
 		m.checks = msg
 		return m, nil
+	case backendResourcesMsg:
+		m.resources = msg
+		m.loading = false
+		m.selectedIdx = 0
+		m.offset = 0
+		if len(m.resources) > 0 {
+			return m, m.fetchBackendDetails()
+		}
+		return m, nil
+	case backendDetailsMsg:
+		m.details = backend.Resource(msg)
+		m.loading = false
+		return m, nil
 	}
 	return m, nil
+}
+
+func (m model) renderBackendSelect() string {
+	title := titleStyle.Render(" Select Backend ")
+	var rows []string
+	for i, b := range m.backends {
+		cursor := " "
+		if i == m.selectedBackend {
+			cursor = ">"
+		}
+		row := fmt.Sprintf("%s %s", cursor, b.Name())
+		if i == m.selectedBackend {
+			row = selectedStyle.Render(row)
+		}
+		rows = append(rows, row)
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	help := helpStyle.Render("j/k:move  enter:select  esc:back")
+	return panelStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, content, "", help))
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -456,6 +677,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case viewLogs:
 		switch key {
+		case "?":
+			m.helpVisible = !m.helpVisible
+			return m, nil
+		case "n":
+			m.view = viewNotifications
+			return m, nil
 		case "q", "esc":
 			if m.watching {
 				m.watching = false
@@ -504,6 +731,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch key {
+		case "?":
+			m.helpVisible = !m.helpVisible
+			return m, nil
+		case "n":
+			m.view = viewNotifications
+			return m, nil
 		case "q", "esc":
 			m.view = viewMain
 			return m, nil
@@ -570,6 +803,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case viewPR:
 		switch key {
+		case "?":
+			m.helpVisible = !m.helpVisible
+			return m, nil
 		case "q", "esc":
 			m.view = viewMain
 			return m, nil
@@ -711,10 +947,146 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+	case viewBackend:
+		switch key {
+		case "q", "esc":
+			m.view = viewMain
+			return m, nil
+		case "?":
+			m.helpVisible = !m.helpVisible
+			return m, nil
+		case "n":
+			m.view = viewNotifications
+			return m, nil
+		case "b":
+			m.backends = availableBackends()
+			m.selectedBackend = 0
+			m.previousView = m.view
+			m.view = viewBackendSelect
+			return m, nil
+		case "r":
+			m.loading = true
+			m.err = nil
+			return m, m.fetchBackendResources()
+		case "1", "2", "3", "4", "5":
+			idx, _ := strconv.Atoi(key)
+			if idx-1 < len(m.backendTabs) {
+				m.backendTab = m.backendTabs[idx-1]
+				m.resources = nil
+				m.selectedIdx = 0
+				m.offset = 0
+				m.filter = ""
+				return m, m.fetchBackendResources()
+			}
+			return m, nil
+		case "j", "down":
+			if m.selectedIdx < len(m.resources)-1 {
+				m.selectedIdx++
+				if m.selectedIdx >= m.offset+listHeight() {
+					m.offset++
+				}
+				return m, m.fetchBackendDetails()
+			}
+			return m, nil
+		case "k", "up":
+			if m.selectedIdx > 0 {
+				m.selectedIdx--
+				if m.selectedIdx < m.offset {
+					m.offset--
+				}
+				return m, m.fetchBackendDetails()
+			}
+			return m, nil
+		case "g":
+			m.selectedIdx = 0
+			m.offset = 0
+			return m, m.fetchBackendDetails()
+		case "G":
+			if len(m.resources) > 0 {
+				m.selectedIdx = len(m.resources) - 1
+				return m, m.fetchBackendDetails()
+			}
+			return m, nil
+		case "enter":
+			if len(m.resources) > 0 {
+				res := m.resources[m.selectedIdx]
+				return m, func() tea.Msg {
+					out, err := m.backend.Inspect(m.backendTab, res.ID)
+					if err != nil {
+						return errMsg{err}
+					}
+					return statusMsg(fmt.Sprintf("Inspect: %s", out.Name))
+				}
+			}
+			return m, nil
+		case "s":
+			return m, m.runBackendActionForSelected("start")
+		case "x":
+			return m, m.runBackendActionForSelected("stop")
+		case "R":
+			return m, m.runBackendActionForSelected("restart")
+		case "e":
+			return m, m.runBackendActionForSelected("exec")
+		case "l":
+			return m, m.runBackendActionForSelected("logs")
+		case "d":
+			return m, m.runBackendActionForSelected("rm")
+		case "i":
+			return m, m.runBackendActionForSelected("inspect")
+		}
+		return m, nil
+	case viewBackendSelect:
+		switch key {
+		case "q", "esc":
+			if m.previousView == viewBackendSelect {
+				return m, tea.Quit
+			}
+			m.view = m.previousView
+			m.previousView = viewBackendSelect
+			return m, nil
+		case "n":
+			m.view = viewNotifications
+			return m, nil
+		case "j", "down":
+			if m.selectedBackend < len(m.backends)-1 {
+				m.selectedBackend++
+			}
+			return m, nil
+		case "k", "up":
+			if m.selectedBackend > 0 {
+				m.selectedBackend--
+			}
+			return m, nil
+		case "enter":
+			if len(m.backends) > 0 {
+				return m.switchBackend(m.backends[m.selectedBackend])
+			}
+			return m, nil
+		}
+		return m, nil
+	case viewNotifications:
+		switch key {
+		case "q", "esc", "n":
+			m.view = viewMain
+			return m, nil
+		}
+		return m, nil
 	case viewMain:
 		switch key {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "?":
+			m.helpVisible = !m.helpVisible
+			return m, nil
+		case "n":
+			m.view = viewNotifications
+			return m, nil
+		case "B":
+			m.backends = availableBackends()
+			m.selectedBackend = 0
+			m.previousView = m.view
+			m.view = viewBackendSelect
+			return m, nil
 		case "o":
 			m.view = viewRepo
 			m.repoFilter = ""
@@ -850,6 +1222,12 @@ func (m model) View() string {
 		b.WriteString(m.renderRepoSelector())
 	case viewPR:
 		b.WriteString(m.renderPRView())
+	case viewBackend:
+		b.WriteString(m.renderBackend())
+	case viewBackendSelect:
+		b.WriteString(m.renderBackendSelect())
+	case viewNotifications:
+		b.WriteString(m.renderNotificationLog())
 	default:
 		b.WriteString(m.renderMain())
 	}
@@ -864,11 +1242,92 @@ func (m model) View() string {
 		b.WriteString(successStyle.Render(m.statusMsg))
 	}
 
+	if m.notification != nil {
+		b.WriteString("\n")
+		b.WriteString(m.renderNotification())
+	}
+
 	output := b.String()
 	if m.height > 0 {
 		output = lipgloss.NewStyle().Height(m.height).Render(output)
 	}
+	if m.helpVisible {
+		output = lipgloss.JoinVertical(lipgloss.Top, output, m.renderStatusBar())
+	}
 	return output
+}
+
+func (m model) renderNotification() string {
+	if m.notification == nil {
+		return ""
+	}
+	style := successStyle
+	switch m.notification.level {
+	case notificationError:
+		style = failureStyle
+	case notificationWarning:
+		style = pendingStyle
+	case notificationInfo:
+		style = mutedStyle
+	}
+	text := style.Render(fmt.Sprintf(" %s ", m.notification.message))
+	return lipgloss.NewStyle().Width(m.width).Render(text)
+}
+
+func (m model) renderNotificationLog() string {
+	if len(m.notifications) == 0 {
+		return panelStyle.Render("No notifications")
+	}
+	title := titleStyle.Render(" Notifications ")
+	var rows []string
+	for i := len(m.notifications) - 1; i >= 0; i-- {
+		n := m.notifications[i]
+		style := successStyle
+		switch n.level {
+		case notificationError:
+			style = failureStyle
+		case notificationWarning:
+			style = pendingStyle
+		case notificationInfo:
+			style = mutedStyle
+		}
+		rows = append(rows, style.Render(fmt.Sprintf("[%s] %s", n.time.Format("15:04:05"), n.message)))
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	help := helpStyle.Render("q/esc:close")
+	return panelStyle.Render(lipgloss.JoinVertical(lipgloss.Left, title, content, "", help))
+}
+
+func (m model) renderStatusBar() string {
+	mode := ""
+	bindings := ""
+	switch m.view {
+	case viewMain:
+		mode = "NORMAL"
+		bindings = "r:refresh  o:repo  p:prs  P:my prs  B:backend  w:watch  l:logs  q:quit  n:notifications  ?:help"
+	case viewLogs:
+		mode = "LOGS"
+		bindings = "q:back  g:top  G:bot  j/k:scroll  ctrl+u/d:half-page  n:notifications"
+	case viewRepo:
+		mode = "REPOS"
+		bindings = "type:filter  j/k:move  enter:select  esc:back  g/G:top/bot  n:notifications"
+	case viewPR:
+		mode = "PRS"
+		bindings = "j/k:move  b:open  d:detail  D:diff  c:checkout  C:close  M:merge  a:approve  A:ready  r:refresh  m:mine  s:scope  q:back  n:notifications"
+	case viewBackend:
+		mode = strings.ToUpper(m.backendTab)
+		bindings = fmt.Sprintf("1-5:tabs  j/k:move  enter:inspect  s:start  x:stop  R:restart  e:exec  l:logs  d:delete  i:inspect  q:back  n:notifications  ?:help")
+	case viewBackendSelect:
+		mode = "BACKEND"
+		bindings = "j/k:move  enter:select  esc:back  n:notifications"
+	}
+	label := titleStyle.Render(" " + mode + " ")
+	keys := helpStyle.Render(" " + bindings + " ")
+	if len(m.notifications) > 0 {
+		bell := titleStyle.Render(fmt.Sprintf(" 🔔%d ", len(m.notifications)))
+		keys = lipgloss.JoinHorizontal(lipgloss.Top, keys, bell)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, label, keys)
 }
 
 func (m model) renderMain() string {
@@ -884,7 +1343,7 @@ func (m model) renderMain() string {
 	main := lipgloss.JoinHorizontal(lipgloss.Top, runsPanel, jobsPanel)
 
 	repoLabel := mutedStyle.Render(fmt.Sprintf("Repo: %s  |  ", m.currentRepo.NameWithOwner))
-	help := helpStyle.Render("r:refresh  o:change repo  q:quit")
+	help := helpStyle.Render("r:refresh  o:change repo  B:backend  q:quit")
 	bottom := lipgloss.JoinHorizontal(lipgloss.Top, repoLabel, help)
 
 	output := lipgloss.JoinVertical(lipgloss.Top, main, bottom)
@@ -892,6 +1351,142 @@ func (m model) renderMain() string {
 		output = lipgloss.NewStyle().Height(m.height).Render(output)
 	}
 	return output
+}
+
+func listHeight() int {
+	return 12
+}
+
+func (m model) renderBackend() string {
+	if m.backend == nil {
+		return panelStyle.Render("No backend configured")
+	}
+
+	title := titleStyle.Render(fmt.Sprintf(" %s ", m.backend.Name()))
+
+	tabHeader := ""
+	for i, tab := range m.backendTabs {
+		style := mutedStyle
+		if tab == m.backendTab {
+			style = selectedStyle
+		}
+		tabHeader += style.Render(fmt.Sprintf(" %d:%s ", i+1, tab))
+	}
+
+	columns := m.backend.Columns(m.backendTab)
+	header := ""
+	if len(columns) > 0 {
+		header = headerStyle.Render(formatColumns(columns))
+	}
+
+	var rows []string
+	for i, res := range m.resources {
+		cursor := " "
+		if i == m.selectedIdx {
+			cursor = ">"
+		}
+		row := fmt.Sprintf("%s %s", cursor, formatResourceRow(res, columns))
+		if i == m.selectedIdx {
+			row = selectedStyle.Render(row)
+		}
+		rows = append(rows, row)
+	}
+
+	listH := listHeight()
+	if m.offset < 0 {
+		m.offset = 0
+	}
+	maxOffset := len(rows) - listH
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.offset > maxOffset {
+		m.offset = maxOffset
+	}
+	if m.selectedIdx < m.offset {
+		m.offset = m.selectedIdx
+	}
+	if m.selectedIdx >= m.offset+listH {
+		m.offset = m.selectedIdx - listH + 1
+	}
+	end := m.offset + listH
+	if end > len(rows) {
+		end = len(rows)
+	}
+	visible := rows[m.offset:end]
+
+	body := ""
+	if len(columns) > 0 {
+		body = lipgloss.JoinVertical(lipgloss.Left, append([]string{header}, visible...)...)
+	} else {
+		body = lipgloss.JoinVertical(lipgloss.Left, visible...)
+	}
+
+	right := ""
+	if len(m.resources) > 0 && m.selectedIdx < len(m.resources) {
+		res := m.resources[m.selectedIdx]
+		var details []string
+		details = append(details, headerStyle.Render(" Details "))
+		if res.Status != "" {
+			details = append(details, fmt.Sprintf("Status: %s", res.Status))
+		}
+		for k, v := range res.Details {
+			details = append(details, fmt.Sprintf("%s: %s", k, v))
+		}
+		if len(res.Actions) > 0 {
+			details = append(details, "", headerStyle.Render(" Actions "))
+			for i, action := range res.Actions {
+				details = append(details, fmt.Sprintf("%d. %s", i+1, action))
+			}
+		}
+		right = lipgloss.JoinVertical(lipgloss.Left, details...)
+		right = lipgloss.NewStyle().Width(m.width/2 - 2).Render(right)
+	}
+
+	filterLine := ""
+	if m.filter != "" {
+		filterLine = mutedStyle.Render("Filter: " + m.filter)
+	}
+
+	help := helpStyle.Render("1-5:tabs  j/k:move  g/G:top/bot  enter:inspect  s:start  x:stop  R:restart  e:exec  l:logs  d:delete  i:inspect  q:back")
+
+	leftPane := lipgloss.JoinVertical(lipgloss.Left, title, "", tabHeader, "", body)
+	content := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, "", right)
+	if filterLine != "" {
+		content = lipgloss.JoinVertical(lipgloss.Top, content, "", filterLine)
+	}
+	content = lipgloss.JoinVertical(lipgloss.Top, content, "", help)
+
+	if m.height > 0 {
+		content = lipgloss.NewStyle().Height(m.height).Render(content)
+	}
+	return content
+}
+
+func formatColumns(columns []string) string {
+	parts := make([]string, 0, len(columns))
+	for _, c := range columns {
+		parts = append(parts, fmt.Sprintf("%-16s", c))
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatResourceRow(res backend.Resource, columns []string) string {
+	if len(columns) == 0 {
+		return res.Name
+	}
+	parts := make([]string, 0, len(columns))
+	for _, c := range columns {
+		parts = append(parts, truncate(res.Details[c], 16))
+	}
+	return strings.Join(parts, " ")
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-3] + "..."
 }
 
 func (m model) renderRuns(w int) string {
@@ -1386,7 +1981,17 @@ func (m model) renderLogs() string {
 }
 
 func Run() error {
-	p := tea.NewProgram(New(), tea.WithAltScreen())
+	return RunWithBackend(nil)
+}
+
+func RunWithBackend(b backend.Backend) error {
+	var initModel model
+	if b != nil {
+		initModel = NewWithBackend(b)
+	} else {
+		initModel = New()
+	}
+	p := tea.NewProgram(initModel, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
